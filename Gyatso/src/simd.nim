@@ -544,25 +544,72 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
   elif defined(avx512) or defined(avx2):
     let ones = when defined(avx512): mm512Set1Epi16(1) else: mm256_set1_epi16(1)
     when defined(avx512):
-      var acc = mm512SetzeroSi512()
-      for i in 0..<nonzeroCount:
+      var acc0 = mm512SetzeroSi512()
+      var acc1 = mm512SetzeroSi512()
+      var acc2 = mm512SetzeroSi512()
+      var acc3 = mm512SetzeroSi512()
+      var i = 0
+      while i + 4 <= nonzeroCount:
+        let g0 = int(nonzeroBlocks[i])
+        let g1 = int(nonzeroBlocks[i + 1])
+        let g2 = int(nonzeroBlocks[i + 2])
+        let g3 = int(nonzeroBlocks[i + 3])
+        let x0 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, g0 shl 2)))
+        let x1 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, g1 shl 2)))
+        let x2 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, g2 shl 2)))
+        let x3 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, g3 shl 2)))
+        acc0 = mm512AddEpi32(acc0,
+          mm512MaddEpi16(mm512MaddubsEpi16(x0, mm512LoaduSi512(addr weights[g0 shl 6])), ones))
+        acc1 = mm512AddEpi32(acc1,
+          mm512MaddEpi16(mm512MaddubsEpi16(x1, mm512LoaduSi512(addr weights[g1 shl 6])), ones))
+        acc2 = mm512AddEpi32(acc2,
+          mm512MaddEpi16(mm512MaddubsEpi16(x2, mm512LoaduSi512(addr weights[g2 shl 6])), ones))
+        acc3 = mm512AddEpi32(acc3,
+          mm512MaddEpi16(mm512MaddubsEpi16(x3, mm512LoaduSi512(addr weights[g3 shl 6])), ones))
+        i += 4
+      while i < nonzeroCount:
         let group = int(nonzeroBlocks[i])
         let x = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group shl 2)))
         let w = mm512LoaduSi512(addr weights[group shl 6])
-        let pairs = mm512MaddubsEpi16(x, w)
-        acc = mm512AddEpi32(acc, mm512MaddEpi16(pairs, ones))
+        acc0 = mm512AddEpi32(acc0, mm512MaddEpi16(mm512MaddubsEpi16(x, w), ones))
+        inc i
+      let acc = mm512AddEpi32(mm512AddEpi32(acc0, acc1), mm512AddEpi32(acc2, acc3))
       mm512StoreuSi512(addr sums[0], acc)
     else:
-      var acc0 = mm256_setzero_si256()
-      var acc1 = mm256_setzero_si256()
-      for i in 0..<nonzeroCount:
+      var acc0Even = mm256_setzero_si256()
+      var acc0Odd = mm256_setzero_si256()
+      var acc1Even = mm256_setzero_si256()
+      var acc1Odd = mm256_setzero_si256()
+      var i = 0
+      while i + 1 < nonzeroCount:
+        let g0 = int(nonzeroBlocks[i])
+        let g1 = int(nonzeroBlocks[i + 1])
+        let x0 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, g0 shl 2)))
+        let x1 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, g1 shl 2)))
+        let w00 = mm256_maddubs_epi16(x0,
+          mm256_loadu_si256(cast[ptr M256i](addr weights[g0 shl 6])))
+        let w01 = mm256_maddubs_epi16(x0,
+          mm256_loadu_si256(cast[ptr M256i](addr weights[(g0 shl 6) + 32])))
+        let w10 = mm256_maddubs_epi16(x1,
+          mm256_loadu_si256(cast[ptr M256i](addr weights[g1 shl 6])))
+        let w11 = mm256_maddubs_epi16(x1,
+          mm256_loadu_si256(cast[ptr M256i](addr weights[(g1 shl 6) + 32])))
+        acc0Even = mm256_add_epi32(acc0Even, mm256_madd_epi16(w00, ones))
+        acc1Even = mm256_add_epi32(acc1Even, mm256_madd_epi16(w01, ones))
+        acc0Odd = mm256_add_epi32(acc0Odd, mm256_madd_epi16(w10, ones))
+        acc1Odd = mm256_add_epi32(acc1Odd, mm256_madd_epi16(w11, ones))
+        i += 2
+      if i < nonzeroCount:
         let group = int(nonzeroBlocks[i])
         let x = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group shl 2)))
-        let w = addr weights[group shl 6]
-        let p0 = mm256_maddubs_epi16(x, mm256_loadu_si256(cast[ptr M256i](w)))
-        let p1 = mm256_maddubs_epi16(x, mm256_loadu_si256(cast[ptr M256i](addr weights[(group shl 6) + 32])))
-        acc0 = mm256_add_epi32(acc0, mm256_madd_epi16(p0, ones))
-        acc1 = mm256_add_epi32(acc1, mm256_madd_epi16(p1, ones))
+        let w0 = mm256_maddubs_epi16(x,
+          mm256_loadu_si256(cast[ptr M256i](addr weights[group shl 6])))
+        let w1 = mm256_maddubs_epi16(x,
+          mm256_loadu_si256(cast[ptr M256i](addr weights[(group shl 6) + 32])))
+        acc0Even = mm256_add_epi32(acc0Even, mm256_madd_epi16(w0, ones))
+        acc1Even = mm256_add_epi32(acc1Even, mm256_madd_epi16(w1, ones))
+      let acc0 = mm256_add_epi32(acc0Even, acc0Odd)
+      let acc1 = mm256_add_epi32(acc1Even, acc1Odd)
       mm256_storeu_si256(cast[ptr M256i](addr sums[0]), acc0)
       mm256_storeu_si256(cast[ptr M256i](addr sums[8]), acc1)
   elif defined(neonDotProd):
@@ -609,23 +656,46 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
         let loPairs = neonPairAddS32(neonGetLowS32(lo), neonGetHighS32(lo))
         let hiPairs = neonPairAddS32(neonGetLowS32(hi), neonGetHighS32(hi))
         neonCombineS32(loPairs, hiPairs)
-    var acc0 = neonDupS32(0)
-    var acc1 = neonDupS32(0)
-    var acc2 = neonDupS32(0)
-    var acc3 = neonDupS32(0)
-    for i in 0..<nonzeroCount:
+    var acc0Even = neonDupS32(0)
+    var acc1Even = neonDupS32(0)
+    var acc2Even = neonDupS32(0)
+    var acc3Even = neonDupS32(0)
+    var acc0Odd = neonDupS32(0)
+    var acc1Odd = neonDupS32(0)
+    var acc2Odd = neonDupS32(0)
+    var acc3Odd = neonDupS32(0)
+    var i = 0
+    while i + 1 < nonzeroCount:
+      let g0 = int(nonzeroBlocks[i])
+      let g1 = int(nonzeroBlocks[i + 1])
+      let x0 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g0 shl 2)))
+      let x1 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g1 shl 2)))
+      let x0Lo = neonGetLowS8(x0)
+      let x0Hi = neonGetHighS8(x0)
+      let x1Lo = neonGetLowS8(x1)
+      let x1Hi = neonGetHighS8(x1)
+      acc0Even = neonAddS32(acc0Even, fourOutputDot(x0Lo, x0Hi, neonLoadS8(addr weights[g0 shl 6])))
+      acc1Even = neonAddS32(acc1Even, fourOutputDot(x0Lo, x0Hi, neonLoadS8(addr weights[(g0 shl 6) + 16])))
+      acc2Even = neonAddS32(acc2Even, fourOutputDot(x0Lo, x0Hi, neonLoadS8(addr weights[(g0 shl 6) + 32])))
+      acc3Even = neonAddS32(acc3Even, fourOutputDot(x0Lo, x0Hi, neonLoadS8(addr weights[(g0 shl 6) + 48])))
+      acc0Odd = neonAddS32(acc0Odd, fourOutputDot(x1Lo, x1Hi, neonLoadS8(addr weights[g1 shl 6])))
+      acc1Odd = neonAddS32(acc1Odd, fourOutputDot(x1Lo, x1Hi, neonLoadS8(addr weights[(g1 shl 6) + 16])))
+      acc2Odd = neonAddS32(acc2Odd, fourOutputDot(x1Lo, x1Hi, neonLoadS8(addr weights[(g1 shl 6) + 32])))
+      acc3Odd = neonAddS32(acc3Odd, fourOutputDot(x1Lo, x1Hi, neonLoadS8(addr weights[(g1 shl 6) + 48])))
+      i += 2
+    if i < nonzeroCount:
       let group = int(nonzeroBlocks[i])
       let x = neonReinterpretS8(neonDupU32(packFourBytes(inputs, group shl 2)))
       let xLo = neonGetLowS8(x)
       let xHi = neonGetHighS8(x)
-      acc0 = neonAddS32(acc0, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[group shl 6])))
-      acc1 = neonAddS32(acc1, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 16])))
-      acc2 = neonAddS32(acc2, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 32])))
-      acc3 = neonAddS32(acc3, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 48])))
-    neonStoreS32x4(addr sums[0], acc0)
-    neonStoreS32x4(addr sums[4], acc1)
-    neonStoreS32x4(addr sums[8], acc2)
-    neonStoreS32x4(addr sums[12], acc3)
+      acc0Even = neonAddS32(acc0Even, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[group shl 6])))
+      acc1Even = neonAddS32(acc1Even, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 16])))
+      acc2Even = neonAddS32(acc2Even, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 32])))
+      acc3Even = neonAddS32(acc3Even, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 48])))
+    neonStoreS32x4(addr sums[0], neonAddS32(acc0Even, acc0Odd))
+    neonStoreS32x4(addr sums[4], neonAddS32(acc1Even, acc1Odd))
+    neonStoreS32x4(addr sums[8], neonAddS32(acc2Even, acc2Odd))
+    neonStoreS32x4(addr sums[12], neonAddS32(acc3Even, acc3Odd))
   elif defined(sse2):
     template fourOutputDot(loInputs, hiInputs, w, zero: untyped): untyped =
       block:
