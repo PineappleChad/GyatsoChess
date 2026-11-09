@@ -935,6 +935,25 @@ proc gyatsoPairwise*(rawStm, rawNstm: ptr int16, rawOutputs: ptr uint8) =
         var bytes = mm256_packus_epi16(p0, p1)
         bytes = mm256_permute4x64_epi64(bytes, MM_SHUFFLE(3, 1, 2, 0))
         mm256_storeu_si256(cast[ptr M256i](addr outputs[outBase + i]), bytes)
+  elif defined(sse2):
+    let zero = mm_setzero_si128()
+    let maxVec = mm_set1_epi16(255)
+    for perspective in 0..<2:
+      let acc = if perspective == 0: stm else: nstm
+      let outBase = perspective * PAIR_COUNT
+      for i in countup(0, PAIR_COUNT - 16, 16):
+        var a0 = mm_loadu_si128(cast[ptr M128i](addr acc[i]))
+        var b0 = mm_loadu_si128(cast[ptr M128i](addr acc[PAIR_COUNT + i]))
+        var a1 = mm_loadu_si128(cast[ptr M128i](addr acc[i + 8]))
+        var b1 = mm_loadu_si128(cast[ptr M128i](addr acc[PAIR_COUNT + i + 8]))
+        a0 = mm_max_epi16(zero, mm_min_epi16(maxVec, a0))
+        b0 = mm_max_epi16(zero, mm_min_epi16(maxVec, b0))
+        a1 = mm_max_epi16(zero, mm_min_epi16(maxVec, a1))
+        b1 = mm_max_epi16(zero, mm_min_epi16(maxVec, b1))
+        let p0 = mm_mulhi_epi16(mm_slli_epi16(a0, 7), b0)
+        let p1 = mm_mulhi_epi16(mm_slli_epi16(a1, 7), b1)
+        let bytes = mm_packus_epi16(p0, p1)
+        mm_storeu_si128(cast[ptr M128i](addr outputs[outBase + i]), bytes)
   else:
     for perspective in 0..<2:
       let acc = if perspective == 0: stm else: nstm
