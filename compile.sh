@@ -23,7 +23,8 @@ echo "7. AVX512+VNNI (x86-64 AVX-512 VNNI NNUE)"
 echo "8. AVX512+VBMI2 (x86-64 AVX-512 VBMI2 sparse NNUE)"
 echo "9. AVX512+VNNI+VBMI2 (x86-64 combined NNUE path)"
 echo "10. NEON+DotProd (ARMv8.2-A dot-product NNUE)"
-printf "Select extensions (1-10): "
+echo "11. SSE2 (generic x86 NNUE path)"
+printf "Select extensions (1-11): "
 read arch_choice
 
 AVX_FLAGS=""
@@ -47,6 +48,9 @@ elif [ "$arch_choice" = "9" ]; then
 elif [ "$arch_choice" = "10" ]; then
     AVX_FLAGS="-d:neon -d:neonDotProd"
     ARCH_CFLAGS="-march=armv8.2-a+dotprod"
+elif [ "$arch_choice" = "11" ]; then
+    AVX_FLAGS="-d:sse2"
+    ARCH_CFLAGS="-msse2"
 fi
 
 if [ "$choice" = "1" ]; then

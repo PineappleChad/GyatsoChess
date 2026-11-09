@@ -42,6 +42,9 @@ else ifneq ($(findstring __AVXVNNI__,$(HOST_CPU_MACROS)),)
 else ifneq ($(findstring __AVX2__,$(HOST_CPU_MACROS)),)
     ARCH_DEFS += -d:avx2 -d:simd
     ISA_CFLAGS += -mavx2
+else ifneq ($(findstring __SSE2__,$(HOST_CPU_MACROS)),)
+    ARCH_DEFS += -d:sse2 -d:simd
+    ISA_CFLAGS += -msse2
 else ifneq ($(findstring __ARM_NEON,$(HOST_CPU_MACROS)),)
     ARCH_DEFS += -d:neon -d:simd
 ifneq ($(findstring __ARM_FEATURE_DOTPROD,$(HOST_CPU_MACROS)),)

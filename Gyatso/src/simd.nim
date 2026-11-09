@@ -10,6 +10,11 @@ when defined(avx512) or defined(avx2):
     import nimsimd/avx2
     import nimsimd/avx
     import nimsimd/sse2
+elif defined(sse2):
+    import nimsimd/sse2
+
+when defined(sse2) and not (defined(avx2) or defined(avx512)):
+    {.passC: "-msse2".}
 
 
 when defined(avx512):
@@ -184,6 +189,32 @@ elif defined(neon) or defined(arm64) or defined(aarch64):
             let pairSums = vpadd_s32(vget_low_s32(vec), vget_high_s32(vec))
             vget_lane_s32(vpadd_s32(pairSums, pairSums), 0)
 
+elif defined(sse2):
+    type
+        VEPI16* = M128i
+        VEPI32* = M128i
+
+    const CHUNK_SIZE* = 8
+
+    func vecZero16*(): VEPI16 {.inline.} = mm_setzero_si128()
+    func vecZero32*(): VEPI32 {.inline.} = mm_setzero_si128()
+    func vecSetOne16*(n: int16): VEPI16 {.inline.} = mm_set1_epi16(n)
+    func vecLoad*(src: pointer): VEPI16 {.inline.} =
+        mm_loadu_si128(cast[ptr M128i](src))
+    func vecStore*(dst: pointer, vec: VEPI16) {.inline.} =
+        mm_storeu_si128(cast[ptr M128i](dst), vec)
+    func vecAdd16*(a, b: VEPI16): VEPI16 {.inline.} = mm_add_epi16(a, b)
+    func vecSub16*(a, b: VEPI16): VEPI16 {.inline.} = mm_sub_epi16(a, b)
+    func vecMax16*(a, b: VEPI16): VEPI16 {.inline.} = mm_max_epi16(a, b)
+    func vecMin16*(a, b: VEPI16): VEPI16 {.inline.} = mm_min_epi16(a, b)
+    func vecMullo16*(a, b: VEPI16): VEPI16 {.inline.} = mm_mullo_epi16(a, b)
+    func vecMadd16*(a, b: VEPI16): VEPI32 {.inline.} = mm_madd_epi16(a, b)
+    func vecAdd32*(a, b: VEPI32): VEPI32 {.inline.} = mm_add_epi32(a, b)
+
+    func vecReduceAdd32*(vec: VEPI32): int32 {.inline.} =
+        let sum64 = mm_add_epi32(vec, mm_unpackhi_epi64(vec, vec))
+        mm_cvtsi128_si32(mm_add_epi32(sum64, mm_shuffle_epi32(sum64, 1)))
+
 else:
     # ── Scalar fallback ──────────────────────────────────────────────────────
     # Used when -d:simd is set but no supported SIMD ISA is selected/detected.
@@ -247,6 +278,8 @@ when defined(neon) or defined(arm64) or defined(aarch64):
   type
     MLInt16x8 {.importc: "int16x8_t", header: "arm_neon.h", bycopy.} = object
     MLInt8x16 {.importc: "int8x16_t", header: "arm_neon.h", bycopy.} = object
+    MLInt8x8 {.importc: "int8x8_t", header: "arm_neon.h", bycopy.} = object
+    MLInt32x2 {.importc: "int32x2_t", header: "arm_neon.h", bycopy.} = object
     MLInt32x4 {.importc: "int32x4_t", header: "arm_neon.h", bycopy.} = object
     MLUint32x4 {.importc: "uint32x4_t", header: "arm_neon.h", bycopy.} = object
     MLUint8x8 {.importc: "uint8x8_t", header: "arm_neon.h", bycopy.} = object
@@ -262,7 +295,12 @@ when defined(neon) or defined(arm64) or defined(aarch64):
   func neonShiftLeftS16(a: MLInt16x8, shift: int32): MLInt16x8 {.importc: "vshlq_n_s16".}
   func neonDoublingMulHighS16(a, b: MLInt16x8): MLInt16x8 {.importc: "vqdmulhq_s16".}
   func neonNarrowUnsignedS16(a: MLInt16x8): MLUint8x8 {.importc: "vqmovun_s16".}
-  func neonNarrowUnsignedHighS16(lo: MLUint8x8, a: MLInt16x8): MLUint8x16 {.importc: "vqmovun_high_s16".}
+  when defined(arm64) or defined(aarch64):
+    func neonNarrowUnsignedHighS16(lo: MLUint8x8, a: MLInt16x8): MLUint8x16 {.importc: "vqmovun_high_s16".}
+  else:
+    func neonCombineU8(a, b: MLUint8x8): MLUint8x16 {.importc: "vcombine_u8".}
+    template neonNarrowUnsignedHighS16(lo, a: untyped): untyped =
+      neonCombineU8(lo, neonNarrowUnsignedS16(a))
   func neonStoreU8x16(p: ptr uint8, v: MLUint8x16) {.importc: "vst1q_u8".}
   func neonAsU32(v: MLUint8x16): MLUint32x4 {.importc: "vreinterpretq_u32_u8".}
   func neonTestU32(a, b: MLUint32x4): MLUint32x4 {.importc: "vtstq_u32".}
@@ -277,15 +315,40 @@ when defined(neon) or defined(arm64) or defined(aarch64):
   func neonAddS32(a, b: MLInt32x4): MLInt32x4 {.importc: "vaddq_s32".}
   func neonStoreS32x4(p: ptr int32, v: MLInt32x4) {.importc: "vst1q_s32".}
   func neonMoveNarrowU32(a: MLUint32x4): MLUint16x4 {.importc: "vmovn_u32".}
-  func neonMoveNarrowHighU32(lo: MLUint16x4, a: MLUint32x4): MLUint16x8 {.importc: "vmovn_high_u32".}
+  when defined(arm64) or defined(aarch64):
+    func neonMoveNarrowHighU32(lo: MLUint16x4, a: MLUint32x4): MLUint16x8 {.importc: "vmovn_high_u32".}
+    func neonAddAcrossU16(v: MLUint16x8): uint16 {.importc: "vaddvq_u16".}
+  else:
+    func neonCombineU16(a, b: MLUint16x4): MLUint16x8 {.importc: "vcombine_u16".}
+    template neonMoveNarrowHighU32(lo, a: untyped): untyped =
+      neonCombineU16(lo, neonMoveNarrowU32(a))
+    func neonGetLowU16(v: MLUint16x8): MLUint16x4 {.importc: "vget_low_u16".}
+    func neonGetHighU16(v: MLUint16x8): MLUint16x4 {.importc: "vget_high_u16".}
+    func neonAddU16x4(a, b: MLUint16x4): MLUint16x4 {.importc: "vadd_u16".}
+    func neonGetLaneU16(v: MLUint16x4, lane: int32): uint16 {.importc: "vget_lane_u16".}
+    template neonAddAcrossU16(v: untyped): untyped =
+      block:
+        let lanes = v
+        let pairs = neonAddU16x4(neonGetLowU16(lanes), neonGetHighU16(lanes))
+        uint16(uint32(neonGetLaneU16(pairs, 0)) + uint32(neonGetLaneU16(pairs, 1)) +
+               uint32(neonGetLaneU16(pairs, 2)) + uint32(neonGetLaneU16(pairs, 3)))
   func neonAndU16(a, b: MLUint16x8): MLUint16x8 {.importc: "vandq_u16".}
-  func neonAddAcrossU16(v: MLUint16x8): uint16 {.importc: "vaddvq_u16".}
+  # Pairwise activations are at most (255 * 255) >> 9 = 127, so signed int8 products are exact.
+  func neonDupU32(v: uint32): MLUint32x4 {.importc: "vdupq_n_u32".}
+  func neonReinterpretS8(v: MLUint32x4): MLInt8x16 {.importc: "vreinterpretq_s8_u32".}
+  func neonLoadS8(p: ptr int8): MLInt8x16 {.importc: "vld1q_s8".}
   when defined(neonDotProd):
-    func neonDupU32(v: uint32): MLUint32x4 {.importc: "vdupq_n_u32".}
-    func neonReinterpretS8(v: MLUint32x4): MLInt8x16 {.importc: "vreinterpretq_s8_u32".}
-    func neonLoadS8(p: ptr int8): MLInt8x16 {.importc: "vld1q_s8".}
     func neonDotS32(acc: MLInt32x4, a, b: MLInt8x16): MLInt32x4 {.importc: "vdotq_s32".}
     func neonStoreS32(p: ptr int32, v: MLInt32x4) {.importc: "vst1q_s32".}
+  else:
+    func neonGetLowS8(v: MLInt8x16): MLInt8x8 {.importc: "vget_low_s8".}
+    func neonGetHighS8(v: MLInt8x16): MLInt8x8 {.importc: "vget_high_s8".}
+    func neonMulLongS8(a, b: MLInt8x8): MLInt16x8 {.importc: "vmull_s8".}
+    func neonPairLongS16(v: MLInt16x8): MLInt32x4 {.importc: "vpaddlq_s16".}
+    func neonGetLowS32(v: MLInt32x4): MLInt32x2 {.importc: "vget_low_s32".}
+    func neonGetHighS32(v: MLInt32x4): MLInt32x2 {.importc: "vget_high_s32".}
+    func neonPairAddS32(a, b: MLInt32x2): MLInt32x2 {.importc: "vpadd_s32".}
+    func neonCombineS32(a, b: MLInt32x2): MLInt32x4 {.importc: "vcombine_s32".}
   {.pop.}
 
 
@@ -311,6 +374,17 @@ elif defined(avx2):
     let raw = mm256_loadu_si256(cast[ptr M256i](p))
     lo = mm256Cvtepi8Epi16Impl(mm256_castsi256_si128(raw))
     hi = mm256Cvtepi8Epi16Impl(mm256_extracti128_si256(raw, 1))
+
+elif defined(sse2):
+  func vecLoadW8*(p: pointer): M128i {.inline.} =
+    let raw = mm_loadl_epi64(cast[ptr M128i](p))
+    mm_unpacklo_epi8(raw, mm_cmpgt_epi8(mm_setzero_si128(), raw))
+
+  template vecLoadW8x2*(p: pointer, lo, hi: untyped) =
+    let raw = mm_loadu_si128(cast[ptr M128i](p))
+    let sign = mm_cmpgt_epi8(mm_setzero_si128(), raw)
+    lo = mm_unpacklo_epi8(raw, sign)
+    hi = mm_unpackhi_epi8(raw, sign)
 
 elif defined(neon) or defined(arm64) or defined(aarch64):
   type
@@ -376,7 +450,7 @@ proc collectNonzeroBlocks(inputs: ptr U8Array, blocks: var array[L1_IN div 4, ui
       count += int(countLut[mask])
   else:
     for group in 0..<(L1_IN div 4):
-      let offset = group * 4
+      let offset = group shl 2
       if inputs[offset] != 0 or inputs[offset + 1] != 0 or
          inputs[offset + 2] != 0 or inputs[offset + 3] != 0:
         blocks[count] = uint16(group)
@@ -398,20 +472,23 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
     var acc3 {.noinit.} = mm512SetzeroSi512()
     var i = 0
     while i + 4 <= nonzeroCount:
-      for j in 0..<4:
-        let group = int(nonzeroBlocks[i + j])
-        let x = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group * 4)))
-        let w = mm512LoaduSi512(addr weights[group * 64])
-        case j
-        of 0: acc0 = mm512DpbusdEpi32(acc0, x, w)
-        of 1: acc1 = mm512DpbusdEpi32(acc1, x, w)
-        of 2: acc2 = mm512DpbusdEpi32(acc2, x, w)
-        else: acc3 = mm512DpbusdEpi32(acc3, x, w)
+      let group0 = int(nonzeroBlocks[i])
+      let group1 = int(nonzeroBlocks[i + 1])
+      let group2 = int(nonzeroBlocks[i + 2])
+      let group3 = int(nonzeroBlocks[i + 3])
+      let x0 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group0 shl 2)))
+      let x1 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group1 shl 2)))
+      let x2 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group2 shl 2)))
+      let x3 = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group3 shl 2)))
+      acc0 = mm512DpbusdEpi32(acc0, x0, mm512LoaduSi512(addr weights[group0 shl 6]))
+      acc1 = mm512DpbusdEpi32(acc1, x1, mm512LoaduSi512(addr weights[group1 shl 6]))
+      acc2 = mm512DpbusdEpi32(acc2, x2, mm512LoaduSi512(addr weights[group2 shl 6]))
+      acc3 = mm512DpbusdEpi32(acc3, x3, mm512LoaduSi512(addr weights[group3 shl 6]))
       inc i, 4
     while i < nonzeroCount:
       let group = int(nonzeroBlocks[i])
-      let x = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group * 4)))
-      let w = mm512LoaduSi512(addr weights[group * 64])
+      let x = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group shl 2)))
+      let w = mm512LoaduSi512(addr weights[group shl 6])
       acc0 = mm512DpbusdEpi32(acc0, x, w)
       inc i
     let acc = mm512AddEpi32(mm512AddEpi32(acc0, acc1), mm512AddEpi32(acc2, acc3))
@@ -431,33 +508,34 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
       let group1 = int(nonzeroBlocks[i + 1])
       let group2 = int(nonzeroBlocks[i + 2])
       let group3 = int(nonzeroBlocks[i + 3])
-      let x0 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group0 * 4)))
-      let x1 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group1 * 4)))
-      let x2 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group2 * 4)))
-      let x3 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group3 * 4)))
-      let w00 = mm256_loadu_si256(cast[ptr M256i](addr weights[group0 * 64]))
-      let w01 = mm256_loadu_si256(cast[ptr M256i](addr weights[group1 * 64]))
-      let w02 = mm256_loadu_si256(cast[ptr M256i](addr weights[group2 * 64]))
-      let w03 = mm256_loadu_si256(cast[ptr M256i](addr weights[group3 * 64]))
-      let w10 = mm256_loadu_si256(cast[ptr M256i](addr weights[group0 * 64 + 32]))
-      let w11 = mm256_loadu_si256(cast[ptr M256i](addr weights[group1 * 64 + 32]))
-      let w12 = mm256_loadu_si256(cast[ptr M256i](addr weights[group2 * 64 + 32]))
-      let w13 = mm256_loadu_si256(cast[ptr M256i](addr weights[group3 * 64 + 32]))
-      acc00 = mm256DpbusdEpi32(acc00, x0, w00)
-      acc01 = mm256DpbusdEpi32(acc01, x1, w01)
-      acc02 = mm256DpbusdEpi32(acc02, x2, w02)
-      acc03 = mm256DpbusdEpi32(acc03, x3, w03)
-      acc10 = mm256DpbusdEpi32(acc10, x0, w10)
-      acc11 = mm256DpbusdEpi32(acc11, x1, w11)
-      acc12 = mm256DpbusdEpi32(acc12, x2, w12)
-      acc13 = mm256DpbusdEpi32(acc13, x3, w13)
+      let x0 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group0 shl 2)))
+      let x1 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group1 shl 2)))
+      let x2 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group2 shl 2)))
+      let x3 = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group3 shl 2)))
+      acc00 = mm256DpbusdEpi32(acc00, x0,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[group0 shl 6])))
+      acc01 = mm256DpbusdEpi32(acc01, x1,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[group1 shl 6])))
+      acc02 = mm256DpbusdEpi32(acc02, x2,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[group2 shl 6])))
+      acc03 = mm256DpbusdEpi32(acc03, x3,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[group3 shl 6])))
+      acc10 = mm256DpbusdEpi32(acc10, x0,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[(group0 shl 6) + 32])))
+      acc11 = mm256DpbusdEpi32(acc11, x1,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[(group1 shl 6) + 32])))
+      acc12 = mm256DpbusdEpi32(acc12, x2,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[(group2 shl 6) + 32])))
+      acc13 = mm256DpbusdEpi32(acc13, x3,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[(group3 shl 6) + 32])))
       inc i, 4
     while i < nonzeroCount:
       let group = int(nonzeroBlocks[i])
-      let x = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group * 4)))
-      let w = addr weights[group * 64]
-      acc00 = mm256DpbusdEpi32(acc00, x, mm256_loadu_si256(cast[ptr M256i](w)))
-      acc10 = mm256DpbusdEpi32(acc10, x, mm256_loadu_si256(cast[ptr M256i](addr weights[group * 64 + 32])))
+      let x = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group shl 2)))
+      acc00 = mm256DpbusdEpi32(acc00, x,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[group shl 6])))
+      acc10 = mm256DpbusdEpi32(acc10, x,
+        mm256_loadu_si256(cast[ptr M256i](addr weights[(group shl 6) + 32])))
       inc i
     let acc0 = mm256_add_epi32(mm256_add_epi32(acc00, acc01), mm256_add_epi32(acc02, acc03))
     let acc1 = mm256_add_epi32(mm256_add_epi32(acc10, acc11), mm256_add_epi32(acc12, acc13))
@@ -469,8 +547,8 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
       var acc = mm512SetzeroSi512()
       for i in 0..<nonzeroCount:
         let group = int(nonzeroBlocks[i])
-        let x = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group * 4)))
-        let w = mm512LoaduSi512(addr weights[group * 64])
+        let x = mm512Set1Epi32(cast[int32](packFourBytes(inputs, group shl 2)))
+        let w = mm512LoaduSi512(addr weights[group shl 6])
         let pairs = mm512MaddubsEpi16(x, w)
         acc = mm512AddEpi32(acc, mm512MaddEpi16(pairs, ones))
       mm512StoreuSi512(addr sums[0], acc)
@@ -479,10 +557,10 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
       var acc1 = mm256_setzero_si256()
       for i in 0..<nonzeroCount:
         let group = int(nonzeroBlocks[i])
-        let x = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group * 4)))
-        let w = addr weights[group * 64]
+        let x = mm256_set1_epi32(cast[int32](packFourBytes(inputs, group shl 2)))
+        let w = addr weights[group shl 6]
         let p0 = mm256_maddubs_epi16(x, mm256_loadu_si256(cast[ptr M256i](w)))
-        let p1 = mm256_maddubs_epi16(x, mm256_loadu_si256(cast[ptr M256i](addr weights[group * 64 + 32])))
+        let p1 = mm256_maddubs_epi16(x, mm256_loadu_si256(cast[ptr M256i](addr weights[(group shl 6) + 32])))
         acc0 = mm256_add_epi32(acc0, mm256_madd_epi16(p0, ones))
         acc1 = mm256_add_epi32(acc1, mm256_madd_epi16(p1, ones))
       mm256_storeu_si256(cast[ptr M256i](addr sums[0]), acc0)
@@ -500,34 +578,98 @@ proc gyatsoMultilayerL1Blocks*(rawInputs: ptr uint8, rawWeights: ptr int8,
     while i + 1 < nonzeroCount:
       let g0 = int(nonzeroBlocks[i])
       let g1 = int(nonzeroBlocks[i + 1])
-      let x0 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g0 * 4)))
-      let x1 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g1 * 4)))
-      acc0 = neonDotS32(acc0, x0, neonLoadS8(addr weights[g0 * 64]))
-      acc1 = neonDotS32(acc1, x0, neonLoadS8(addr weights[g0 * 64 + 16]))
-      acc2 = neonDotS32(acc2, x0, neonLoadS8(addr weights[g0 * 64 + 32]))
-      acc3 = neonDotS32(acc3, x0, neonLoadS8(addr weights[g0 * 64 + 48]))
-      acc4 = neonDotS32(acc4, x1, neonLoadS8(addr weights[g1 * 64]))
-      acc5 = neonDotS32(acc5, x1, neonLoadS8(addr weights[g1 * 64 + 16]))
-      acc6 = neonDotS32(acc6, x1, neonLoadS8(addr weights[g1 * 64 + 32]))
-      acc7 = neonDotS32(acc7, x1, neonLoadS8(addr weights[g1 * 64 + 48]))
+      let x0 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g0 shl 2)))
+      let x1 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g1 shl 2)))
+      acc0 = neonDotS32(acc0, x0, neonLoadS8(addr weights[g0 shl 6]))
+      acc1 = neonDotS32(acc1, x0, neonLoadS8(addr weights[(g0 shl 6) + 16]))
+      acc2 = neonDotS32(acc2, x0, neonLoadS8(addr weights[(g0 shl 6) + 32]))
+      acc3 = neonDotS32(acc3, x0, neonLoadS8(addr weights[(g0 shl 6) + 48]))
+      acc4 = neonDotS32(acc4, x1, neonLoadS8(addr weights[g1 shl 6]))
+      acc5 = neonDotS32(acc5, x1, neonLoadS8(addr weights[(g1 shl 6) + 16]))
+      acc6 = neonDotS32(acc6, x1, neonLoadS8(addr weights[(g1 shl 6) + 32]))
+      acc7 = neonDotS32(acc7, x1, neonLoadS8(addr weights[(g1 shl 6) + 48]))
       i += 2
     if i < nonzeroCount:
       let g0 = int(nonzeroBlocks[i])
-      let x0 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g0 * 4)))
-      acc0 = neonDotS32(acc0, x0, neonLoadS8(addr weights[g0 * 64]))
-      acc1 = neonDotS32(acc1, x0, neonLoadS8(addr weights[g0 * 64 + 16]))
-      acc2 = neonDotS32(acc2, x0, neonLoadS8(addr weights[g0 * 64 + 32]))
-      acc3 = neonDotS32(acc3, x0, neonLoadS8(addr weights[g0 * 64 + 48]))
+      let x0 = neonReinterpretS8(neonDupU32(packFourBytes(inputs, g0 shl 2)))
+      acc0 = neonDotS32(acc0, x0, neonLoadS8(addr weights[g0 shl 6]))
+      acc1 = neonDotS32(acc1, x0, neonLoadS8(addr weights[(g0 shl 6) + 16]))
+      acc2 = neonDotS32(acc2, x0, neonLoadS8(addr weights[(g0 shl 6) + 32]))
+      acc3 = neonDotS32(acc3, x0, neonLoadS8(addr weights[(g0 shl 6) + 48]))
     neonStoreS32(addr sums[0], neonAddS32(acc0, acc4))
     neonStoreS32(addr sums[4], neonAddS32(acc1, acc5))
     neonStoreS32(addr sums[8], neonAddS32(acc2, acc6))
     neonStoreS32(addr sums[12], neonAddS32(acc3, acc7))
+  elif defined(neon) or defined(arm64) or defined(aarch64):
+    template fourOutputDot(xLo, xHi, w: untyped): untyped =
+      block:
+        let wv = w
+        let lo = neonPairLongS16(neonMulLongS8(xLo, neonGetLowS8(wv)))
+        let hi = neonPairLongS16(neonMulLongS8(xHi, neonGetHighS8(wv)))
+        let loPairs = neonPairAddS32(neonGetLowS32(lo), neonGetHighS32(lo))
+        let hiPairs = neonPairAddS32(neonGetLowS32(hi), neonGetHighS32(hi))
+        neonCombineS32(loPairs, hiPairs)
+    var acc0 = neonDupS32(0)
+    var acc1 = neonDupS32(0)
+    var acc2 = neonDupS32(0)
+    var acc3 = neonDupS32(0)
+    for i in 0..<nonzeroCount:
+      let group = int(nonzeroBlocks[i])
+      let x = neonReinterpretS8(neonDupU32(packFourBytes(inputs, group shl 2)))
+      let xLo = neonGetLowS8(x)
+      let xHi = neonGetHighS8(x)
+      acc0 = neonAddS32(acc0, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[group shl 6])))
+      acc1 = neonAddS32(acc1, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 16])))
+      acc2 = neonAddS32(acc2, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 32])))
+      acc3 = neonAddS32(acc3, fourOutputDot(xLo, xHi, neonLoadS8(addr weights[(group shl 6) + 48])))
+    neonStoreS32x4(addr sums[0], acc0)
+    neonStoreS32x4(addr sums[4], acc1)
+    neonStoreS32x4(addr sums[8], acc2)
+    neonStoreS32x4(addr sums[12], acc3)
+  elif defined(sse2):
+    template fourOutputDot(loInputs, hiInputs, w, zero: untyped): untyped =
+      block:
+        let wv = w
+        let sign = mm_cmpgt_epi8(zero, wv)
+        let loWeights = mm_unpacklo_epi8(wv, sign)
+        let hiWeights = mm_unpackhi_epi8(wv, sign)
+        let loPairs = mm_madd_epi16(loInputs, loWeights)
+        let hiPairs = mm_madd_epi16(hiInputs, hiWeights)
+        let loSums = mm_shuffle_epi32(
+          mm_add_epi32(loPairs, mm_shuffle_epi32(loPairs, 0xB1)), 0xD8)
+        let hiSums = mm_shuffle_epi32(
+          mm_add_epi32(hiPairs, mm_shuffle_epi32(hiPairs, 0xB1)), 0xD8)
+        mm_unpacklo_epi64(loSums, hiSums)
+    var acc0 = mm_setzero_si128()
+    var acc1 = mm_setzero_si128()
+    var acc2 = mm_setzero_si128()
+    var acc3 = mm_setzero_si128()
+    let zero = mm_setzero_si128()
+    for i in 0..<nonzeroCount:
+      let group = int(nonzeroBlocks[i])
+      let inputPattern = cast[int32](packFourBytes(inputs, group shl 2))
+      let x = mm_set1_epi32(inputPattern)
+      let loInputs = mm_unpacklo_epi8(x, zero)
+      let hiInputs = mm_unpackhi_epi8(x, zero)
+      let weightBase = group shl 6
+      acc0 = mm_add_epi32(acc0, fourOutputDot(loInputs, hiInputs,
+        mm_loadu_si128(cast[ptr M128i](addr weights[weightBase])), zero))
+      acc1 = mm_add_epi32(acc1, fourOutputDot(loInputs, hiInputs,
+        mm_loadu_si128(cast[ptr M128i](addr weights[weightBase + 16])), zero))
+      acc2 = mm_add_epi32(acc2, fourOutputDot(loInputs, hiInputs,
+        mm_loadu_si128(cast[ptr M128i](addr weights[weightBase + 32])), zero))
+      acc3 = mm_add_epi32(acc3, fourOutputDot(loInputs, hiInputs,
+        mm_loadu_si128(cast[ptr M128i](addr weights[weightBase + 48])), zero))
+    mm_storeu_si128(cast[ptr M128i](addr sums[0]), acc0)
+    mm_storeu_si128(cast[ptr M128i](addr sums[4]), acc1)
+    mm_storeu_si128(cast[ptr M128i](addr sums[8]), acc2)
+    mm_storeu_si128(cast[ptr M128i](addr sums[12]), acc3)
   else:
     for output in 0..<16: sums[output] = 0
     for i in 0..<nonzeroCount:
       let group = int(nonzeroBlocks[i])
-      let x = group * 4
-      let w = group * 64
+      let x = group shl 2
+      let w = group shl 6
       for output in 0..<16:
         let wo = w + output * 4
         sums[output] += int32(inputs[x]) * int32(weights[wo]) +

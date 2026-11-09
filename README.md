@@ -204,7 +204,7 @@ make EXE=Gyatso-ABCDEF12 EVALFILE=/path/to/custom.bin
 make clean
 ```
 
-The Makefile defaults to AVX2 + BMI2 + SIMD. Adjust `ARCH_DEFS` in the Makefile for other targets.
+The Makefile detects AVX-512, AVX-VNNI, AVX2, SSE2, or ARM NEON on the build host and selects the matching NNUE path. Adjust `ARCH_DEFS` in the Makefile to override target selection.
 
 ---
 
@@ -217,7 +217,7 @@ compile.bat
 - **Option 1:** Normal build (fast compile, good performance)
 - **Option 2:** PGO build (slow compile, maximum performance — recommended for regular use)
 
-Then choose a matching target: Default, AVX2, AVX2+VNNI, AVX-512, AVX-512+VNNI, AVX-512+VBMI2, AVX-512+VNNI+VBMI2, NEON, or NEON+DotProd. Select only extensions supported by the build machine's CPU.
+Then choose a matching target: Default, SSE2, AVX2, AVX2+VNNI, AVX-512, AVX-512+VNNI, AVX-512+VBMI2, AVX-512+VNNI+VBMI2, NEON, or NEON+DotProd. Select only extensions supported by the build machine's CPU.
 
 **Linux / macOS — `compile.sh`**
 ```bash

@@ -25,7 +25,8 @@ echo 7. AVX512+VNNI (x86-64 AVX-512 VNNI NNUE)
 echo 8. AVX512+VBMI2 (x86-64 AVX-512 VBMI2 sparse NNUE)
 echo 9. AVX512+VNNI+VBMI2 (x86-64 combined NNUE path)
 echo 10. NEON+DotProd (ARMv8.2-A dot-product NNUE)
-set /p arch_choice="Select extensions (1-10): "
+echo 11. SSE2 (generic x86 NNUE path)
+set /p arch_choice="Select extensions (1-11): "
 
 set AVX_FLAGS=
 set ARCH_CFLAGS=-march=native
@@ -39,6 +40,8 @@ if "%arch_choice%"=="8" set AVX_FLAGS=-d:avx2 -d:bmi2 -d:avx512 -d:avx512vbmi2
 if "%arch_choice%"=="9" set AVX_FLAGS=-d:avx2 -d:bmi2 -d:avx512 -d:avx512vnni -d:avx512vbmi2
 if "%arch_choice%"=="10" set AVX_FLAGS=-d:neon -d:neonDotProd
 if "%arch_choice%"=="10" set ARCH_CFLAGS=-march=armv8.2-a+dotprod
+if "%arch_choice%"=="11" set AVX_FLAGS=-d:sse2
+if "%arch_choice%"=="11" set ARCH_CFLAGS=-msse2
 
 if "%choice%"=="1" goto NORMAL
 if "%choice%"=="2" goto PGO

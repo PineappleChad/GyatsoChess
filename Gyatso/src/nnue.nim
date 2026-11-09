@@ -219,6 +219,8 @@ proc loadNetworkFromEmbedded*(net: ptr NNUENetwork) =
 
 when defined(avx512):
   const AccTileRegs = 12
+elif defined(avx2):
+  const AccTileRegs = 6
 else:
   const AccTileRegs = 8
 const AccTileSize = AccTileRegs * CHUNK_SIZE
@@ -564,6 +566,29 @@ proc computeDeltaBoth(b: Board, m: Move, deltas: var array[Color, PerspDelta],
         newMail[toSq.int] = movingPiece
         newOcc = (newOcc and not fromSq.bit) or toSq.bit
 
+    let allPawns = wPawns or bPawns
+    let allRooks = b.byPiece[Rook.ord] or b.byPiece[Rook.ord + 6]
+    let allQueens = b.byPiece[Queen.ord] or b.byPiece[Queen.ord + 6]
+    let bishops = diagSliders and not allQueens
+    var newKnightsRooks = knights or allRooks
+    var newNonKingTargets = allPawns or knights or bishops or allRooks or allQueens
+    var newNonQueenTargets = allPawns or knights or bishops or allRooks
+    for ci in 0..<nChanged:
+        let sq = changedSqs[ci]
+        let bit = Square(sq).bit
+        let oldPiece = b.mailbox[sq]
+        let newPiece = newMail[sq]
+        if oldPiece != NoPiece:
+            let pt = oldPiece.pieceType
+            if pt == Knight or pt == Rook: newKnightsRooks = newKnightsRooks and not bit
+            if pt != King: newNonKingTargets = newNonKingTargets and not bit
+            if pt != King and pt != Queen: newNonQueenTargets = newNonQueenTargets and not bit
+        if newPiece != NoPiece:
+            let pt = newPiece.pieceType
+            if pt == Knight or pt == Rook: newKnightsRooks = newKnightsRooks or bit
+            if pt != King: newNonKingTargets = newNonKingTargets or bit
+            if pt != King and pt != Queen: newNonQueenTargets = newNonQueenTargets or bit
+
     var affMask: Bitboard = Bitboard(0)
     for ci in 0..<nChanged:
         let c = changedSqs[ci]
@@ -638,15 +663,17 @@ proc computeDeltaBoth(b: Board, m: Move, deltas: var array[Color, PerspDelta],
 
     template emitAddAttacks(sq: Square, pt: PieceType, pc: Color) =
         if pt != King:
-            var tgts = getPieceAttacks(sq, pt, pc, newOcc) and not newKings
-            let targetMask = ValidThreatTargetMask[pt.ord]
+            let validTargets = case pt
+                of Pawn: newKnightsRooks
+                of Knight, Queen: newNonKingTargets
+                of Bishop, Rook: newNonQueenTargets
+                else: Bitboard(0)
+            var tgts = getPieceAttacks(sq, pt, pc, newOcc) and not newKings and validTargets
             let attPiece = makePiece(pc, pt)
             while not tgts.isEmpty:
                 let dst = poplsb(tgts)
                 let tp = newMail[dst.int]
-                let ptOrd = tp.pieceType.ord
-                if (targetMask and (1'u8 shl ptOrd)) != 0:
-                    pushAddEdge(makeEdge(sq.int, dst.int, attPiece, tp))
+                pushAddEdge(makeEdge(sq.int, dst.int, attPiece, tp))
 
     if m.isCastling:
         let rookFrom = toSq
@@ -677,9 +704,8 @@ proc computeDeltaBoth(b: Board, m: Move, deltas: var array[Color, PerspDelta],
     while not stationaryMask.isEmpty:
         let oldSq = poplsb(stationaryMask).int
         let piece = b.mailbox[oldSq]
-        let oldType = piece.pieceType.ord
         let oldColor = piece.color
-        let pt = PieceType(oldType)
+        let pt = piece.pieceType
         let sq = Square(oldSq)
         let oldTargets = getPieceAttacks(sq, pt, oldColor, occ)
         let newTargets = getPieceAttacks(sq, pt, oldColor, newOcc)
@@ -694,10 +720,15 @@ proc computeDeltaBoth(b: Board, m: Move, deltas: var array[Color, PerspDelta],
         of Pawn: subTgts = subTgts and knightsRooks
         of Bishop, Rook: subTgts = subTgts and not queens
         else: discard
-        var addTgts = ((newTargets and not oldTargets) or (newTargets and changedMaskBB)) and not newKings
+        let validTargets = case pt
+            of Pawn: newKnightsRooks
+            of Knight, Queen: newNonKingTargets
+            of Bishop, Rook: newNonQueenTargets
+            else: Bitboard(0)
+        var addTgts = ((newTargets and not oldTargets) or
+                       (newTargets and changedMaskBB)) and not newKings and validTargets
 
         if not subTgts.isEmpty or not addTgts.isEmpty:
-            let targetMask = ValidThreatTargetMask[oldType]
             while not subTgts.isEmpty:
                 let dst = poplsb(subTgts)
                 let tp = b.mailbox[dst.int]
@@ -706,9 +737,7 @@ proc computeDeltaBoth(b: Board, m: Move, deltas: var array[Color, PerspDelta],
             while not addTgts.isEmpty:
                 let dst = poplsb(addTgts)
                 let tp = newMail[dst.int]
-                let ptOrd = tp.pieceType.ord
-                if (targetMask and (1'u8 shl ptOrd)) != 0:
-                    pushAddEdge(makeEdge(oldSq, dst.int, piece, tp))
+                pushAddEdge(makeEdge(oldSq, dst.int, piece, tp))
 
     let kingSqW = b.kingSquare(White)
     let flipW = computeFlip(White, kingSqW)
